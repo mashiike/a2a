@@ -9,7 +9,7 @@ import (
 
 // DefaultPushNotificationRequestBuilder is the default request builder for push notifications.
 // It creates a JSON request with the task as the body and sets the content type to application/json.
-// but this builder does not authonication.
+// but this builder does not handle authentication.
 func DefaultPushNotificationRequestBuilder(
 	ctx context.Context,
 	cfg *TaskPushNotificationConfig,
