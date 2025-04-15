@@ -1,0 +1,61 @@
+version: 2
+
+linters:
+  default: standard
+  enable:
+    - unconvert
+    - cyclop
+    - revive
+    - depguard
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - "fmt.Fprintln"
+        - "fmt.Fprintf"
+        - "io.WriteString"
+        - "(io.ReadCloser).Close"
+        - "(*bytes.Buffer).Write"
+        - "(*bytes.Buffer).WriteString"
+        - "(*bytes.Buffer).WriteTo"
+        - "(net/http.ResponseWriter).Write"
+        - "(*os.File).Close"
+        - "github.com/mashiike/canyon.RunWithContext"
+        - "(*encoding/json.Encoder).Encode"
+    revive:
+      max-open-files: 2048
+      rules:
+        - name: blank-imports
+          severity: warning
+          disabled: false
+        - name: exported
+          disabled: true
+    cyclop:
+      max-complexity: 17
+    depguard:
+      rules:
+        main:
+          list-mode: lax
+          deny:
+            - pkg: "github.com/aws/aws-sdk-go/"
+              desc: use github.com/aws/aws-sdk-go-v2
+run:
+  tests: false
+  timeout: 15m
+  concurrency: 15
+  relative-path-mode: gomod
+  issues-exit-code: 2
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    paths:
+      - ".*\\.gen\\.go$"
+      - "internal\\/testutil\\/.*\\.go$"
