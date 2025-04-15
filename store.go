@@ -125,8 +125,14 @@ func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status 
 		status.Timestamp = &timestamp
 	}
 	if task.Status.Timestamp != nil {
-		before, _ := time.Parse(time.RFC3339, *task.Status.Timestamp)
-		after, _ := time.Parse(time.RFC3339, *status.Timestamp)
+		before, err := time.Parse(time.RFC3339, *task.Status.Timestamp)
+		if err != nil {
+			return err
+		}
+		after, err := time.Parse(time.RFC3339, *status.Timestamp)
+		if err != nil {
+			return err
+		}
 		if after.Before(before) {
 			// Ignore the update if the new timestamp is before the current one
 			return nil

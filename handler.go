@@ -720,41 +720,12 @@ func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Reque
 			errCh <- err
 		}
 	}()
-	var eventCh <-chan StreamingEvent
-	for {
-		select {
-		case <-ctx.Done():
-			h.logger.DebugContext(ctx, "Context canceled during task subscription", "task_id", params.ID)
-			h.handleTaskError(w, rpcReq, params.ID, context.Canceled)
-			cancel()
-			wg.Wait()
-			return
-		case err := <-errCh:
-			if err == nil {
-				continue
-			}
-			h.logger.WarnContext(ctx, "Error occurred during task processing", "error", err, "task_id", params.ID)
-			h.handleTaskError(w, rpcReq, params.ID, err)
-			cancel()
-			wg.Wait()
-			return
-		default:
-		}
-		var err error
-		eventCh, err = h.queue.Subscribe(ctx, params.ID)
-		if err != nil {
-			if errors.Is(err, ErrTaskNotFound) {
-				h.logger.DebugContext(httpReq.Context(), "Task not found during subscription, retrying", "task_id", params.ID)
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-			h.logger.WarnContext(httpReq.Context(), "Failed to subscribe to task events", "error", err, "task_id", params.ID)
-			h.handleTaskError(w, rpcReq, params.ID, err)
-			cancel()
-			wg.Wait()
-			return
-		}
-		break
+	eventCh, err := h.waitSubscribeReady(ctx, params.ID, errCh)
+	if err != nil {
+		h.handleTaskError(w, rpcReq, params.ID, err)
+		cancel()
+		wg.Wait()
+		return
 	}
 	h.logger.DebugContext(httpReq.Context(), "Subscribed to task events", "task_id", params.ID)
 	h.writeSSE(httpReq.Context(), w, rpcReq, func() (StreamingEvent, error) {
@@ -778,6 +749,34 @@ func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Reque
 	cancel()
 	wg.Wait()
 	h.logger.DebugContext(ctx, "onSendTaskSubscribe finished", "task_id", params.ID)
+}
+
+func (h *Handler) waitSubscribeReady(ctx context.Context, taskID string, errCh <-chan error) (<-chan StreamingEvent, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			h.logger.DebugContext(ctx, "Context canceled during task subscription", "task_id", taskID)
+			return nil, context.Canceled
+		case err := <-errCh:
+			if err == nil {
+				continue
+			}
+			h.logger.WarnContext(ctx, "Error occurred during task processing", "error", err, "task_id", taskID)
+			return nil, err
+		default:
+		}
+		eventCh, err := h.queue.Subscribe(ctx, taskID)
+		if err != nil {
+			if errors.Is(err, ErrTaskNotFound) {
+				h.logger.DebugContext(ctx, "Task not found during subscription, retrying", "task_id", taskID)
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			h.logger.WarnContext(ctx, "Failed to subscribe to task events", "error", err, "task_id", taskID)
+			return nil, err
+		}
+		return eventCh, nil
+	}
 }
 
 func (h *Handler) parseTaskSendParams(params json.RawMessage) (TaskSendParams, error) {

@@ -103,7 +103,6 @@ type Client struct {
 	Logger             *slog.Logger       // Logger
 	RequestIDGenerator RequestIDGenerator // Request ID generator
 
-	agentURL   *url.URL           // Agent URL
 	mu         sync.Mutex         // Mutex for synchronization
 	wg         sync.WaitGroup     // Wait group for goroutines
 	baseCtx    context.Context    // Base context

@@ -23,6 +23,7 @@ linters:
         - "(net/http.ResponseWriter).Write"
         - "(*os.File).Close"
         - "github.com/mashiike/canyon.RunWithContext"
+        - "(*encoding/json.Encoder).Encode"
     revive:
       max-open-files: 2048
       rules:
