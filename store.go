@@ -6,20 +6,38 @@ import (
 	"time"
 )
 
+// Store defines the interface for managing tasks and their associated data.
 type Store interface {
+	// GetHistory retrieves the message history for a given session ID.
+	// If historyLength is negative, all messages are returned.
 	GetHistory(ctx context.Context, sessionID string, historyLength int) ([]Message, error)
+
+	// AppendHistory appends a message to the history of a given session ID.
 	AppendHistory(ctx context.Context, sessionID string, message Message) error
+
+	// CreateTask creates a new task in the store.
 	CreateTask(ctx context.Context, task *Task) error
+
+	// GetTask retrieves a task by its ID.
 	GetTask(ctx context.Context, taskID string) (*Task, error)
+
+	// UpdateStatus updates the status of a task by its ID.
 	UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error
+
+	// UpdateArtifact updates or appends an artifact to a task by its ID.
 	UpdateArtifact(ctx context.Context, taskID string, artifact Artifact) error
 }
 
+// PushNotificationStore defines the interface for managing push notifications for tasks.
 type PushNotificationStore interface {
+	// CreateTaskPushNotification creates a push notification configuration for a task.
 	CreateTaskPushNotification(ctx context.Context, cfg *TaskPushNotificationConfig) error
+
+	// GetTaskPushNotification retrieves the push notification configuration for a task by its ID.
 	GetTaskPushNotification(ctx context.Context, taskID string) (*TaskPushNotificationConfig, error)
 }
 
+// InMemoryStore is an in-memory implementation of the Store and PushNotificationStore interfaces.
 type InMemoryStore struct {
 	mu                sync.RWMutex
 	initOnce          sync.Once
@@ -28,6 +46,7 @@ type InMemoryStore struct {
 	pushNotifications map[string]*TaskPushNotificationConfig
 }
 
+// init initializes the internal data structures of the InMemoryStore.
 func (s *InMemoryStore) init() {
 	s.initOnce.Do(func() {
 		s.tasks = make(map[string]*Task)
@@ -36,6 +55,7 @@ func (s *InMemoryStore) init() {
 	})
 }
 
+// CreateTask creates a new task in the in-memory store.
 func (s *InMemoryStore) CreateTask(ctx context.Context, task *Task) error {
 	s.init()
 	s.mu.Lock()
@@ -46,6 +66,7 @@ func (s *InMemoryStore) CreateTask(ctx context.Context, task *Task) error {
 	return nil
 }
 
+// GetTask retrieves a task by its ID from the in-memory store.
 func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*Task, error) {
 	s.init()
 	s.mu.RLock()
@@ -58,6 +79,7 @@ func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*Task, erro
 	return nil, ErrTaskNotFound
 }
 
+// AppendHistory appends a message to the history of a given session ID.
 func (s *InMemoryStore) AppendHistory(ctx context.Context, sessionID string, message Message) error {
 	s.init()
 	s.mu.Lock()
@@ -69,6 +91,8 @@ func (s *InMemoryStore) AppendHistory(ctx context.Context, sessionID string, mes
 	return nil
 }
 
+// GetHistory retrieves the message history for a given session ID.
+// If historyLength is negative, all messages are returned.
 func (s *InMemoryStore) GetHistory(ctx context.Context, sessionID string, historyLength int) ([]Message, error) {
 	s.init()
 	s.mu.RLock()
@@ -86,6 +110,7 @@ func (s *InMemoryStore) GetHistory(ctx context.Context, sessionID string, histor
 	return []Message{}, nil
 }
 
+// UpdateStatus updates the status of a task by its ID.
 func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error {
 	s.init()
 	s.mu.Lock()
@@ -112,6 +137,7 @@ func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status 
 	return nil
 }
 
+// UpdateArtifact updates or appends an artifact to a task by its ID.
 func (s *InMemoryStore) UpdateArtifact(ctx context.Context, taskID string, artifact Artifact) error {
 	s.init()
 	s.mu.Lock()
@@ -133,6 +159,7 @@ func (s *InMemoryStore) UpdateArtifact(ctx context.Context, taskID string, artif
 	return ErrTaskNotFound
 }
 
+// CreateTaskPushNotification creates a push notification configuration for a task.
 func (s *InMemoryStore) CreateTaskPushNotification(ctx context.Context, cfg *TaskPushNotificationConfig) error {
 	s.init()
 	s.mu.Lock()
@@ -141,6 +168,7 @@ func (s *InMemoryStore) CreateTaskPushNotification(ctx context.Context, cfg *Tas
 	return nil
 }
 
+// GetTaskPushNotification retrieves the push notification configuration for a task by its ID.
 func (s *InMemoryStore) GetTaskPushNotification(ctx context.Context, taskID string) (*TaskPushNotificationConfig, error) {
 	s.init()
 	s.mu.RLock()
