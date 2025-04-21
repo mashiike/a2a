@@ -47,6 +47,7 @@ type Handler struct {
 	notificationHTTPClient     *http.Client
 	taskStatePollingInterval   time.Duration
 	agentHistoryLength         int
+	ignoreReplaceHost          bool
 
 	extraRPCHandlersMux sync.Mutex
 	extraRPCHandlers    map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)
@@ -104,6 +105,11 @@ type HandlerOptions struct {
 	// TaskStatePollingInterval is the interval for polling task states.
 	// Default is 5 seconds.
 	TaskStatePollingInterval time.Duration
+
+	// IgnoreReplaceHost is a flag to ignore the AgentCard URL host replacement.
+	// Default is false.
+	// if URL is host is 0.0.0.0, it will be replaced with the request host.
+	IgnoreReplaceHost bool
 }
 
 // fillDefaults sets default values for HandlerOptions if they are not provided.
@@ -215,6 +221,7 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 		notificationHTTPClient:     options.PushNotificationHTTPClient,
 		agentHistoryLength:         *options.AgentHistoryLength,
 		taskStatePollingInterval:   options.TaskStatePollingInterval,
+		ignoreReplaceHost:          options.IgnoreReplaceHost,
 		extraRPCHandlers:           make(map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)),
 	}
 	if card == nil {
@@ -265,8 +272,19 @@ func (h *Handler) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 		h.methodNotAllowedHandler.ServeHTTP(w, r)
 		return
 	}
+	card := *h.card
+	if h.baseURL.Hostname() == "0.0.0.0" && !h.ignoreReplaceHost {
+		u := *h.baseURL
+		u.Host = r.Host
+		if isHTTPS(r) {
+			u.Scheme = "https"
+		} else {
+			u.Scheme = "http"
+		}
+		card.URL = u.String()
+	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(h.card); err != nil {
+	if err := json.NewEncoder(w).Encode(&card); err != nil {
 		h.logger.WarnContext(r.Context(), "Failed to encode agent card", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
