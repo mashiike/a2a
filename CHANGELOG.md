@@ -1,5 +1,8 @@
 # Changelog
 
+## [v0.2.1](https://github.com/mashiike/a2a/compare/v0.2.0...v0.2.1) - 2025-04-22
+- Bump Songmu/tagpr from 1.5.1 to 1.5.2 by @dependabot in https://github.com/mashiike/a2a/pull/7
+
 ## [v0.2.0](https://github.com/mashiike/a2a/compare/v0.1.0...v0.2.0) - 2025-04-21
 - card.URL domain is 0.0.0.0 is auto replace requested domain by @mashiike in https://github.com/mashiike/a2a/pull/5
 
