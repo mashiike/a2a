@@ -15,7 +15,8 @@ func TestStreamingEventMarshalUnmarshal(t *testing.T) {
 			Status: TaskStatus{
 				State: TaskStateWorking,
 			},
-			Final: true,
+			Final:    true,
+			Metadata: make(map[string]any),
 		},
 	}
 
@@ -40,6 +41,7 @@ func TestStreamingEventMarshalUnmarshal(t *testing.T) {
 				},
 				Index: 0,
 			},
+			Metadata: make(map[string]any),
 		},
 	}
 

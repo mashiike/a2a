@@ -98,10 +98,6 @@ type HandlerOptions struct {
 	// Default is http.DefaultClient.
 	PushNotificationHTTPClient *http.Client
 
-	// AgentHistoryLength is the length of the task history for the agent.
-	// Default is -1, meaning all history is retained.
-	AgentHistoryLength *int
-
 	// TaskStatePollingInterval is the interval for polling task states.
 	// Default is 5 seconds.
 	TaskStatePollingInterval time.Duration
@@ -146,10 +142,6 @@ func (options *HandlerOptions) fillDefaults() {
 		options.SessionIDGenerator = func(r *http.Request) string {
 			return uuid.New().String()
 		}
-	}
-	if options.AgentHistoryLength == nil {
-		options.AgentHistoryLength = new(int)
-		*options.AgentHistoryLength = -1
 	}
 	if options.TaskStatePollingInterval == 0 {
 		options.TaskStatePollingInterval = 5 * time.Second
@@ -219,7 +211,6 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 		notificationURLVerifier:    options.PushNotificationURLVerifier,
 		notificationRequestBuilder: options.PushNotificationRequestBuilder,
 		notificationHTTPClient:     options.PushNotificationHTTPClient,
-		agentHistoryLength:         *options.AgentHistoryLength,
 		taskStatePollingInterval:   options.TaskStatePollingInterval,
 		ignoreReplaceHost:          options.IgnoreReplaceHost,
 		extraRPCHandlers:           make(map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)),
@@ -426,20 +417,11 @@ func (h *Handler) onGetTask(w http.ResponseWriter, httpReq *http.Request, rpcReq
 
 func (h *Handler) processGetTask(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request, params TaskQueryParams) {
 	h.logger.DebugContext(httpReq.Context(), "processGetTask called", "task_id", params.ID)
-	task, err := h.store.GetTask(httpReq.Context(), params.ID)
+	task, err := h.store.GetTask(httpReq.Context(), params.ID, params.HistoryLength)
 	if err != nil {
 		h.logger.WarnContext(httpReq.Context(), "Failed to get task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
-	}
-	if params.HistoryLength != nil && *params.HistoryLength > 0 {
-		history, err := h.store.GetHistory(httpReq.Context(), task.SessionID, *params.HistoryLength)
-		if err != nil {
-			h.logger.WarnContext(httpReq.Context(), "Failed to get task history", "error", err, "task_id", params.ID)
-			h.handleTaskError(w, rpcReq, params.ID, err)
-			return
-		}
-		task.History = history
 	}
 	h.logger.DebugContext(httpReq.Context(), "Task retrieved successfully", "task_id", params.ID)
 	jsonrpc.WriteResult(w, rpcReq, task, http.StatusOK)
@@ -454,10 +436,10 @@ func (h *Handler) onCancelTask(w http.ResponseWriter, httpReq *http.Request, rpc
 		return
 	}
 	tr := h.NewTaskResponder(params.ID)
-	canceledState := TaskStatus{
+	canceledStatus := TaskStatus{
 		State: TaskStateCanceled,
 	}
-	if err := tr.SetStatus(httpReq.Context(), canceledState, true, params.Metadata); err != nil {
+	if err := tr.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
 		h.logger.WarnContext(httpReq.Context(), "Failed to cancel task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
@@ -894,35 +876,22 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 			return err
 		}
 	}
-	task := &Task{
-		ID: params.ID,
-		Status: TaskStatus{
-			State: TaskStateSubmitted,
-		},
-		Metadata:  params.Metadata,
-		Artifacts: make([]Artifact, 0),
-		History:   make([]Message, 0),
+	/*
+		task := &Task{
+			ID: params.ID,
+			Status: TaskStatus{
+				State: TaskStateSubmitted,
+			},
+			Metadata:  params.Metadata,
+			Artifacts: make([]Artifact, 0),
+			History:   make([]Message, 0),
+		}*/
+	if params.SessionID == nil {
+		params.SessionID = Ptr(h.sessIDGenerator(httpReq))
 	}
-	if params.SessionID != nil {
-		task.SessionID = *params.SessionID
-	} else {
-		task.SessionID = h.sessIDGenerator(httpReq)
-	}
-	if err := h.store.CreateTask(ctx, task); err != nil {
-		h.logger.WarnContext(ctx, "Failed to create task", "error", err, "task_id", task.ID)
-		return err
-	}
-	if params.SessionID != nil {
-		history, err := h.store.GetHistory(ctx, *params.SessionID, h.agentHistoryLength)
-		if err != nil {
-			h.logger.WarnContext(ctx, "Failed to get task history during processing", "error", err, "task_id", task.ID)
-			return err
-		}
-		task.History = history
-	}
-	task.History = append(task.History, params.Message)
-	if err := h.store.AppendHistory(ctx, task.SessionID, params.Message); err != nil {
-		h.logger.WarnContext(ctx, "Failed to append task history", "error", err, "task_id", task.ID)
+	task, err := h.store.UpsertTask(ctx, params)
+	if err != nil {
+		h.logger.WarnContext(ctx, "Failed to create task", "error", err, "task_id", params.ID)
 		return err
 	}
 	ctx = withRawRequet(ctx, httpReq, rpcReq)
@@ -940,14 +909,17 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 				h.logger.DebugContext(ctx, "Context canceled during task state polling", "task_id", task.ID)
 				return
 			case <-ticker.C:
-				task, err := h.store.GetTask(cctx, task.ID)
+				task, err := h.store.GetTask(cctx, task.ID, Ptr(0))
 				if err != nil {
 					h.logger.WarnContext(ctx, "Failed to get task during state polling", "error", err, "task_id", task.ID)
 					continue
 				}
-				if task.Status.State == TaskStateCanceled || task.Status.State == TaskStateFailed || task.Status.State == TaskStateCompleted {
+				if task.Status.State.Final() {
 					h.logger.DebugContext(ctx, "Task state polling finished", "task_id", task.ID, "state", task.Status.State)
-					cancel()
+					if task.Status.State == TaskStateCanceled {
+						h.logger.DebugContext(ctx, "Task was canceled", "task_id", task.ID)
+						cancel()
+					}
 					return
 				}
 			}

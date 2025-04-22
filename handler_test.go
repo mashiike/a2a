@@ -68,7 +68,7 @@ func TestHandler_TasksSendSync(t *testing.T) {
 		)
 		tr.SetStatus(ctx, TaskStatus{
 			State: TaskStateCompleted,
-		}, true, nil)
+		}, nil)
 		return nil
 	})
 	handler, err := NewHandler(
@@ -158,7 +158,7 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 		// Start asynchronous processing
 		tr.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
-		}, false, nil)
+		}, nil)
 
 		wg.Add(1) // Increment WaitGroup counter
 		go func() {
@@ -176,7 +176,7 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 			)
 			tr.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
-			}, true, nil)
+			}, nil)
 		}()
 		return nil
 	})
@@ -276,7 +276,7 @@ func TestHandler_TasksCancel(t *testing.T) {
 		// Start background processing
 		tr.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
-		}, true, nil)
+		}, nil)
 
 		wg.Add(1) // Increment WaitGroup counter
 		go func() {
@@ -289,7 +289,7 @@ func TestHandler_TasksCancel(t *testing.T) {
 			case <-time.After(5 * time.Second): // Simulate long-running task
 				tr.SetStatus(ctx, TaskStatus{
 					State: TaskStateCompleted,
-				}, true, nil)
+				}, nil)
 			}
 		}()
 		return nil
@@ -402,7 +402,7 @@ func TestHandler_TasksSendSubscribeSync(t *testing.T) {
 		)
 		tr.SetStatus(ctx, TaskStatus{
 			State: TaskStateCompleted,
-		}, true, nil)
+		}, nil)
 		return nil
 	})
 	handler, err := NewHandler(
@@ -500,7 +500,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 					TextPart("Waiting Ready"),
 				},
 			},
-		}, false, nil)
+		}, nil)
 		wg.Add(1)
 		go func() {
 			ctx := context.Background()
@@ -516,7 +516,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 						TextPart("Processing..."),
 					},
 				},
-			}, false, nil)
+			}, nil)
 			// Finalize with Completed state and an artifact
 			tr.WriteArtifact(ctx, Artifact{
 				Index: 2,
@@ -526,7 +526,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 			}, nil)
 			tr.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
-			}, true, nil)
+			}, nil)
 		}()
 		return nil
 	})
@@ -661,7 +661,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 		// Start background processing
 		tr.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
-		}, true, nil)
+		}, nil)
 
 		wg.Add(1)
 		go func() {
@@ -680,7 +680,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 			)
 			tr.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
-			}, true, nil)
+			}, nil)
 		}()
 		return nil
 	})
@@ -794,12 +794,12 @@ func TestHandler_MultiTurnConversation(t *testing.T) {
 						TextPart("I am test agent, who are you?"),
 					},
 				},
-			}, true, nil)
+			}, nil)
 		} else {
 			// Second turn: return Completed
 			tr.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
-			}, true, nil)
+			}, nil)
 		}
 		return nil
 	})

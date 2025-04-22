@@ -88,8 +88,8 @@ The `Store` interface manages tasks and their associated data. If the server ope
 
 ```go
 type Store interface {
-	GetHistory(ctx context.Context, sessionID string, historyLength int) ([]Message, error)
-	AppendHistory(ctx context.Context, sessionID string, message Message) error
+	GetHistory(ctx context.Context, taskID string, historyLength int) ([]Message, error)
+	AppendHistory(ctx context.Context, taskID string, message Message) error
 	CreateTask(ctx context.Context, task *Task) error
 	GetTask(ctx context.Context, taskID string) (*Task, error)
 	UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error
