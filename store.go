@@ -9,9 +9,9 @@ import (
 // Store defines the interface for managing tasks and their associated data.
 type Store interface {
 	// UpsertTask creates or updates a task in the store.
-	// If the task already exists, it will be append message to the task's history and update metadata.
-	// If the task does not exist, it will create a new task. status is submitted.
-	// return the task with the updated.
+	// If the task already exists, it appends a message to the task's history and updates its metadata.
+	// If the task does not exist, it creates a new task with a "submitted" status.
+	// Returns the task with the applied updates.
 	UpsertTask(ctx context.Context, params TaskSendParams) (*Task, error)
 
 	// GetTask retrieves a task by its ID.
