@@ -208,8 +208,8 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 		return nil, fmt.Errorf("invalid agent card URL: %w", err)
 	}
 	h.baseURL = baseURL
-	h.mux.HandleFunc(options.AgentCardPath, h.HandleAgentCard)
-	rpcHandler := http.Handler(http.HandlerFunc(h.HandleRPC))
+	h.mux.HandleFunc(options.AgentCardPath, h.ServeAgentCard)
+	rpcHandler := http.Handler(http.HandlerFunc(h.ServeRPC))
 	for _, middleware := range options.Middlewares {
 		rpcHandler = middleware(rpcHandler)
 	}
@@ -246,9 +246,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler.ServeHTTP(w, r)
 }
 
-// HandleAgentCard processes requests for the agent card.
-func (h *Handler) HandleAgentCard(w http.ResponseWriter, r *http.Request) {
-	h.logger().DebugContext(r.Context(), "handleAgentCard called", "method", r.Method, "url", r.URL.String())
+// ServeAgentCard serves the agent card as an HTTP handler.
+func (h *Handler) ServeAgentCard(w http.ResponseWriter, r *http.Request) {
+	h.logger().DebugContext(r.Context(), "ServeAgentCard called", "method", r.Method, "url", r.URL.String())
 	if r.Method != http.MethodGet {
 		h.logger().DebugContext(r.Context(), "Method not allowed", "method", r.Method)
 		h.opts.MethodNotAllowedHandler.ServeHTTP(w, r)
@@ -299,8 +299,9 @@ func (h *Handler) rpcHandler(method string) (func(http.ResponseWriter, *http.Req
 	return nil, false
 }
 
-func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
-	h.logger().DebugContext(r.Context(), "handleRPC called", "method", r.Method, "url", r.URL.String())
+// ServeRPC serves JSON-RPC responses as an HTTP handler.
+func (h *Handler) ServeRPC(w http.ResponseWriter, r *http.Request) {
+	h.logger().DebugContext(r.Context(), "ServeRPC called", "method", r.Method, "url", r.URL.String())
 	if r.Method != http.MethodPost {
 		h.logger().DebugContext(r.Context(), "Method not allowed", "method", r.Method)
 		h.opts.MethodNotAllowedHandler.ServeHTTP(w, r)
