@@ -32,22 +32,11 @@ func (f AgentFunc) Invoke(ctx context.Context, r TaskResponder, task *Task) erro
 
 // Handler is a struct for handling JSON-RPC requests.
 type Handler struct {
-	card                       *AgentCard
-	agent                      Agent
-	baseURL                    *url.URL
-	notFoundHandler            http.Handler
-	methodNotAllowedHandler    http.Handler
-	mux                        *http.ServeMux
-	logger                     *slog.Logger
-	sessIDGenerator            func(*http.Request) string
-	store                      Store
-	queue                      PubSub
-	notificationURLVerifier    func(context.Context, *TaskPushNotificationConfig) error
-	notificationRequestBuilder func(context.Context, *TaskPushNotificationConfig, *Task) (*http.Request, error)
-	notificationHTTPClient     *http.Client
-	taskStatePollingInterval   time.Duration
-	agentHistoryLength         int
-	ignoreReplaceHost          bool
+	card    *AgentCard
+	agent   Agent
+	baseURL *url.URL
+	mux     *http.ServeMux
+	opts    HandlerOptions
 
 	extraRPCHandlersMux sync.Mutex
 	extraRPCHandlers    map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)
@@ -83,9 +72,9 @@ type HandlerOptions struct {
 	// Default is InMemoryStore.
 	Store Store
 
-	// TaskEventQueue is the queue for task events.
+	// PubSubQueue is the queue for task events.
 	// Default is ChannelPubSub.
-	TaskEventQueue PubSub
+	PubSubQueue PubSub
 
 	// PushNotificationURLVerifier is a function to verify push notification URLs.
 	// Default is nil, meaning no verification is performed.
@@ -149,8 +138,8 @@ func (options *HandlerOptions) fillDefaults() {
 	if options.Store == nil {
 		options.Store = &InMemoryStore{}
 	}
-	if options.TaskEventQueue == nil {
-		options.TaskEventQueue = &ChannelPubSub{}
+	if options.PubSubQueue == nil {
+		options.PubSubQueue = &ChannelPubSub{}
 	}
 	if options.PushNotificationRequestBuilder == nil {
 		options.PushNotificationRequestBuilder = DefaultPushNotificationRequestBuilder
@@ -178,12 +167,12 @@ func (options *HandlerOptions) validateCapabilities(card *AgentCard) error {
 		*card.Capabilities.PushNotifications = implementedPushStore
 	}
 	if card.Capabilities.Streaming != nil {
-		if *card.Capabilities.Streaming && options.TaskEventQueue == nil {
+		if *card.Capabilities.Streaming && options.PubSubQueue == nil {
 			return fmt.Errorf("agent card streaming is enabled but TaskEventQueue is not set")
 		}
 	} else {
 		card.Capabilities.Streaming = new(bool)
-		*card.Capabilities.Streaming = (options.TaskEventQueue != nil)
+		*card.Capabilities.Streaming = (options.PubSubQueue != nil)
 	}
 	if card.Capabilities.StateTransitionHistory == nil {
 		card.Capabilities.StateTransitionHistory = new(bool)
@@ -199,21 +188,11 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 	}
 	options.fillDefaults()
 	h := &Handler{
-		card:                       card,
-		agent:                      agent,
-		mux:                        http.NewServeMux(),
-		notFoundHandler:            options.NotFoundHandler,
-		methodNotAllowedHandler:    options.MethodNotAllowedHandler,
-		logger:                     options.Logger,
-		sessIDGenerator:            options.SessionIDGenerator,
-		store:                      options.Store,
-		queue:                      options.TaskEventQueue,
-		notificationURLVerifier:    options.PushNotificationURLVerifier,
-		notificationRequestBuilder: options.PushNotificationRequestBuilder,
-		notificationHTTPClient:     options.PushNotificationHTTPClient,
-		taskStatePollingInterval:   options.TaskStatePollingInterval,
-		ignoreReplaceHost:          options.IgnoreReplaceHost,
-		extraRPCHandlers:           make(map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)),
+		card:             card,
+		agent:            agent,
+		mux:              http.NewServeMux(),
+		opts:             *options,
+		extraRPCHandlers: make(map[string]func(http.ResponseWriter, *http.Request, *jsonrpc.Request)),
 	}
 	if card == nil {
 		return nil, ErrAgentCardRequired
@@ -229,8 +208,8 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 		return nil, fmt.Errorf("invalid agent card URL: %w", err)
 	}
 	h.baseURL = baseURL
-	h.mux.HandleFunc(options.AgentCardPath, h.handleAgentCard)
-	rpcHandler := http.Handler(http.HandlerFunc(h.handleRPC))
+	h.mux.HandleFunc(options.AgentCardPath, h.HandleAgentCard)
+	rpcHandler := http.Handler(http.HandlerFunc(h.HandleRPC))
 	for _, middleware := range options.Middlewares {
 		rpcHandler = middleware(rpcHandler)
 	}
@@ -242,29 +221,41 @@ func NewHandler(card *AgentCard, agent Agent, options *HandlerOptions) (*Handler
 	return h, nil
 }
 
+func (h *Handler) logger() *slog.Logger {
+	return h.opts.Logger.With("component", "github.com/mashiike/a2a.Handler")
+}
+
+func (h *Handler) store() Store {
+	return h.opts.Store
+}
+
+func (h *Handler) queue() PubSub {
+	return h.opts.PubSubQueue
+}
+
 // ServeHTTP processes HTTP requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.logger.DebugContext(r.Context(), "ServeHTTP called", "method", r.Method, "url", r.URL.String())
+	h.logger().DebugContext(r.Context(), "ServeHTTP called", "method", r.Method, "url", r.URL.String())
 	handler, pattern := h.mux.Handler(r)
 	if pattern == "" || handler == nil {
-		h.logger.DebugContext(r.Context(), "Handler not found", "url", r.URL.String())
-		h.notFoundHandler.ServeHTTP(w, r)
+		h.logger().DebugContext(r.Context(), "Handler not found", "url", r.URL.String())
+		h.opts.NotFoundHandler.ServeHTTP(w, r)
 		return
 	}
-	h.logger.DebugContext(r.Context(), "Handler found", "pattern", pattern)
+	h.logger().DebugContext(r.Context(), "Handler found", "pattern", pattern)
 	handler.ServeHTTP(w, r)
 }
 
-// handleAgentCard processes requests for the agent card.
-func (h *Handler) handleAgentCard(w http.ResponseWriter, r *http.Request) {
-	h.logger.DebugContext(r.Context(), "handleAgentCard called", "method", r.Method, "url", r.URL.String())
+// HandleAgentCard processes requests for the agent card.
+func (h *Handler) HandleAgentCard(w http.ResponseWriter, r *http.Request) {
+	h.logger().DebugContext(r.Context(), "handleAgentCard called", "method", r.Method, "url", r.URL.String())
 	if r.Method != http.MethodGet {
-		h.logger.DebugContext(r.Context(), "Method not allowed", "method", r.Method)
-		h.methodNotAllowedHandler.ServeHTTP(w, r)
+		h.logger().DebugContext(r.Context(), "Method not allowed", "method", r.Method)
+		h.opts.MethodNotAllowedHandler.ServeHTTP(w, r)
 		return
 	}
 	card := *h.card
-	if h.baseURL.Hostname() == "0.0.0.0" && !h.ignoreReplaceHost {
+	if h.baseURL.Hostname() == "0.0.0.0" && !h.opts.IgnoreReplaceHost {
 		u := *h.baseURL
 		u.Host = r.Host
 		if isHTTPS(r) {
@@ -276,13 +267,13 @@ func (h *Handler) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(&card); err != nil {
-		h.logger.WarnContext(r.Context(), "Failed to encode agent card", "error", err)
+		h.logger().WarnContext(r.Context(), "Failed to encode agent card", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-// HandleRPC registers a custom JSON-RPC method.
-func (h *Handler) HandleRPC(method string, handler func(http.ResponseWriter, *http.Request, *jsonrpc.Request)) error {
+// RegisterRPCMethod registers a custom JSON-RPC method.
+func (h *Handler) RegisterRPCMethod(method string, handler func(http.ResponseWriter, *http.Request, *jsonrpc.Request)) error {
 	h.extraRPCHandlersMux.Lock()
 	defer h.extraRPCHandlersMux.Unlock()
 	reserved := jsonrpc.Methods()
@@ -308,16 +299,16 @@ func (h *Handler) rpcHandler(method string) (func(http.ResponseWriter, *http.Req
 	return nil, false
 }
 
-func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
-	h.logger.DebugContext(r.Context(), "handleRPC called", "method", r.Method, "url", r.URL.String())
+func (h *Handler) HandleRPC(w http.ResponseWriter, r *http.Request) {
+	h.logger().DebugContext(r.Context(), "handleRPC called", "method", r.Method, "url", r.URL.String())
 	if r.Method != http.MethodPost {
-		h.logger.DebugContext(r.Context(), "Method not allowed", "method", r.Method)
-		h.methodNotAllowedHandler.ServeHTTP(w, r)
+		h.logger().DebugContext(r.Context(), "Method not allowed", "method", r.Method)
+		h.opts.MethodNotAllowedHandler.ServeHTTP(w, r)
 		return
 	}
 	var req jsonrpc.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.logger.DebugContext(r.Context(), "Failed to parse JSON-RPC request", "error", err)
+		h.logger().DebugContext(r.Context(), "Failed to parse JSON-RPC request", "error", err)
 		jsonrpc.WriteError(w, nil, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeParseError,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeParseError),
@@ -335,7 +326,7 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		validationDiagnostic["params"] = errors.New("params is required")
 	}
 	if len(validationDiagnostic) > 0 {
-		h.logger.DebugContext(r.Context(), "Invalid JSON-RPC request", "diagnostic", validationDiagnostic)
+		h.logger().DebugContext(r.Context(), "Invalid JSON-RPC request", "diagnostic", validationDiagnostic)
 		jsonrpc.WriteError(w, &req, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeInvalidRequest,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeInvalidRequest),
@@ -343,7 +334,7 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}, http.StatusBadRequest)
 		return
 	}
-	h.logger.DebugContext(r.Context(), "JSON-RPC method invoked", "method", req.Method)
+	h.logger().DebugContext(r.Context(), "JSON-RPC method invoked", "method", req.Method)
 	switch req.Method {
 	case jsonrpc.MethodTasksSend:
 		h.onSendTask(w, r, &req)
@@ -368,11 +359,11 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		if rpcHandler, ok := h.rpcHandler(req.Method); ok {
-			h.logger.DebugContext(r.Context(), "Custom JSON-RPC method invoked", "method", req.Method)
+			h.logger().DebugContext(r.Context(), "Custom JSON-RPC method invoked", "method", req.Method)
 			rpcHandler(w, r, &req)
 			return
 		}
-		h.logger.DebugContext(r.Context(), "JSON-RPC method not found", "method", req.Method)
+		h.logger().DebugContext(r.Context(), "JSON-RPC method not found", "method", req.Method)
 		jsonrpc.WriteError(w, &req, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeMethodNotFound,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeMethodNotFound),
@@ -382,21 +373,21 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) onSendTask(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onSendTask called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onSendTask called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskSendParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithCancel(httpReq.Context())
 	defer cancel()
 	if err := h.processTask(ctx, httpReq, rpcReq, params); err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to process task", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to process task", "error", err, "task_id", params.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusInternalServerError)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Task processed successfully", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Task processed successfully", "task_id", params.ID)
 	h.processGetTask(w, httpReq, rpcReq, TaskQueryParams{
 		ID:            params.ID,
 		HistoryLength: params.HistoryLength,
@@ -405,10 +396,10 @@ func (h *Handler) onSendTask(w http.ResponseWriter, httpReq *http.Request, rpcRe
 }
 
 func (h *Handler) onGetTask(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onGetTask called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onGetTask called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskQueryParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task query params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task query params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
@@ -416,22 +407,22 @@ func (h *Handler) onGetTask(w http.ResponseWriter, httpReq *http.Request, rpcReq
 }
 
 func (h *Handler) processGetTask(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request, params TaskQueryParams) {
-	h.logger.DebugContext(httpReq.Context(), "processGetTask called", "task_id", params.ID)
-	task, err := h.store.GetTask(httpReq.Context(), params.ID, params.HistoryLength)
+	h.logger().DebugContext(httpReq.Context(), "processGetTask called", "task_id", params.ID)
+	task, err := h.store().GetTask(httpReq.Context(), params.ID, params.HistoryLength)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to get task", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to get task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Task retrieved successfully", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Task retrieved successfully", "task_id", params.ID)
 	jsonrpc.WriteResult(w, rpcReq, task, http.StatusOK)
 }
 
 func (h *Handler) onCancelTask(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onCancelTask called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onCancelTask called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskIDParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task ID params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task ID params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
@@ -440,11 +431,11 @@ func (h *Handler) onCancelTask(w http.ResponseWriter, httpReq *http.Request, rpc
 		State: TaskStateCanceled,
 	}
 	if err := tr.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to cancel task", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to cancel task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Task canceled successfully", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Task canceled successfully", "task_id", params.ID)
 	h.processGetTask(w, httpReq, rpcReq, TaskQueryParams{
 		ID:       params.ID,
 		Metadata: params.Metadata,
@@ -489,19 +480,19 @@ func (h *Handler) isPushNotificationSupported() bool {
 }
 
 func (h *Handler) onSetPushNotification(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onSetPushNotification called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onSetPushNotification called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskPushNotificationParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse push notification params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse push notification params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
 	if err := h.processSetPushNotification(httpReq.Context(), params); err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to set push notification", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to set push notification", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Push notification set successfully", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Push notification set successfully", "task_id", params.ID)
 	jsonrpc.WriteResult(w, rpcReq, params, http.StatusOK)
 }
 
@@ -512,7 +503,7 @@ func (h *Handler) processSetPushNotification(ctx context.Context, params *TaskPu
 			Message: jsonrpc.CodeMessage(jsonrpc.CodePushNotSupported),
 		}
 	}
-	store, ok := h.store.(PushNotificationStore)
+	store, ok := h.store().(PushNotificationStore)
 	if !ok {
 		return &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodePushNotSupported,
@@ -526,24 +517,24 @@ func (h *Handler) processSetPushNotification(ctx context.Context, params *TaskPu
 }
 
 func (h *Handler) onGetPushNotification(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onGetPushNotification called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onGetPushNotification called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskIDParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task ID params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task ID params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
 	if !h.isPushNotificationSupported() {
-		h.logger.WarnContext(httpReq.Context(), "Push notification not supported", "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Push notification not supported", "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodePushNotSupported,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodePushNotSupported),
 		}, http.StatusBadRequest)
 		return
 	}
-	store, ok := h.store.(PushNotificationStore)
+	store, ok := h.store().(PushNotificationStore)
 	if !ok {
-		h.logger.WarnContext(httpReq.Context(), "Push notification store not implemented", "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Push notification store not implemented", "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodePushNotSupported,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodePushNotSupported),
@@ -552,11 +543,11 @@ func (h *Handler) onGetPushNotification(w http.ResponseWriter, httpReq *http.Req
 	}
 	pushNotificationConfig, err := store.GetTaskPushNotification(httpReq.Context(), params.ID)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to get push notification", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to get push notification", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Push notification retrieved successfully", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Push notification retrieved successfully", "task_id", params.ID)
 	jsonrpc.WriteResult(w, rpcReq, pushNotificationConfig, http.StatusOK)
 }
 
@@ -564,27 +555,22 @@ func (h *Handler) isStreamingSupported() bool {
 	if h.card.Capabilities.Streaming == nil {
 		return false
 	}
+	if h.queue() == nil {
+		return false
+	}
 	return *h.card.Capabilities.Streaming
 }
 
 func (h *Handler) onResubscribe(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onResubscribe called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onResubscribe called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskQueryParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task query params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task query params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
 	if !h.isStreamingSupported() {
-		h.logger.WarnContext(httpReq.Context(), "Streaming not supported", "task_id", rpcReq.ID)
-		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
-			Code:    jsonrpc.CodeUnsupportedOperation,
-			Message: jsonrpc.CodeMessage(jsonrpc.CodeUnsupportedOperation),
-		}, http.StatusBadRequest)
-		return
-	}
-	if h.queue == nil {
-		h.logger.WarnContext(httpReq.Context(), "Task event queue not set", "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Streaming not supported", "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeUnsupportedOperation,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeUnsupportedOperation),
@@ -593,13 +579,13 @@ func (h *Handler) onResubscribe(w http.ResponseWriter, httpReq *http.Request, rp
 	}
 	ctx, cancel := context.WithCancel(httpReq.Context())
 	defer cancel()
-	eventCh, err := h.queue.Subscribe(ctx, params.ID)
+	eventCh, err := h.queue().Subscribe(ctx, params.ID)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to subscribe to task events", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to subscribe to task events", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Subscribed to task events", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Subscribed to task events", "task_id", params.ID)
 	h.writeSSE(ctx, w, rpcReq, func() (StreamingEvent, error) {
 		select {
 		case <-ctx.Done():
@@ -616,7 +602,7 @@ func (h *Handler) onResubscribe(w http.ResponseWriter, httpReq *http.Request, rp
 func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *jsonrpc.Request, fetcher func() (StreamingEvent, error)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		h.logger.WarnContext(ctx, "Response writer does not support flushing")
+		h.logger().WarnContext(ctx, "Response writer does not support flushing")
 		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeUnsupportedOperation,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeUnsupportedOperation),
@@ -636,13 +622,13 @@ func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *j
 		}
 		select {
 		case <-ctx.Done():
-			h.logger.DebugContext(ctx, "Context canceled during SSE")
+			h.logger().DebugContext(ctx, "Context canceled during SSE")
 			return
 		default:
 		}
 		event, fetchErr := fetcher()
 		if fetchErr != nil {
-			h.logger.WarnContext(ctx, "Failed to fetch streaming event", "error", fetchErr)
+			h.logger().WarnContext(ctx, "Failed to fetch streaming event", "error", fetchErr)
 			if errors.Is(fetchErr, context.Canceled) ||
 				errors.Is(fetchErr, context.DeadlineExceeded) ||
 				errors.Is(fetchErr, io.EOF) {
@@ -660,14 +646,14 @@ func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *j
 		} else {
 			bs, err := json.Marshal(&event)
 			if err != nil {
-				h.logger.WarnContext(ctx, "Failed to marshal streaming event", "error", err)
+				h.logger().WarnContext(ctx, "Failed to marshal streaming event", "error", err)
 				continue
 			}
 			rpcResp.Result = bs
 		}
 		bs, err := json.Marshal(rpcResp)
 		if err != nil {
-			h.logger.WarnContext(ctx, "Failed to marshal JSON-RPC response", "error", err)
+			h.logger().WarnContext(ctx, "Failed to marshal JSON-RPC response", "error", err)
 			continue
 		}
 		line := fmt.Sprintf("data: %s\n\n", string(bs))
@@ -680,23 +666,15 @@ func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *j
 }
 
 func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger.DebugContext(httpReq.Context(), "onSendTaskSubscribe called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onSendTaskSubscribe called", "task_id", rpcReq.ID)
 	params, err := h.parseTaskSendParams(rpcReq.Params)
 	if err != nil {
-		h.logger.WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
 	if !h.isStreamingSupported() {
-		h.logger.WarnContext(httpReq.Context(), "Streaming not supported", "task_id", rpcReq.ID)
-		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
-			Code:    jsonrpc.CodeUnsupportedOperation,
-			Message: jsonrpc.CodeMessage(jsonrpc.CodeUnsupportedOperation),
-		}, http.StatusBadRequest)
-		return
-	}
-	if h.queue == nil {
-		h.logger.WarnContext(httpReq.Context(), "Task event queue not set", "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Streaming not supported", "task_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeUnsupportedOperation,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeUnsupportedOperation),
@@ -710,13 +688,13 @@ func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Reque
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		h.logger.DebugContext(ctx, "start processing task", "task_id", params.ID)
+		h.logger().DebugContext(ctx, "start processing task", "task_id", params.ID)
 		defer func() {
-			h.logger.DebugContext(ctx, "finish processing task", "task_id", params.ID)
+			h.logger().DebugContext(ctx, "finish processing task", "task_id", params.ID)
 			wg.Done()
 		}()
 		if err := h.processTask(ctx, httpReq, rpcReq, params); err != nil {
-			h.logger.WarnContext(ctx, "failed to process task", "error", err, "task_id", params.ID)
+			h.logger().WarnContext(ctx, "failed to process task", "error", err, "task_id", params.ID)
 			errCh <- err
 		}
 	}()
@@ -727,7 +705,7 @@ func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Reque
 		wg.Wait()
 		return
 	}
-	h.logger.DebugContext(httpReq.Context(), "Subscribed to task events", "task_id", params.ID)
+	h.logger().DebugContext(httpReq.Context(), "Subscribed to task events", "task_id", params.ID)
 	h.writeSSE(httpReq.Context(), w, rpcReq, func() (StreamingEvent, error) {
 		for {
 			select {
@@ -748,31 +726,31 @@ func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Reque
 	})
 	cancel()
 	wg.Wait()
-	h.logger.DebugContext(ctx, "onSendTaskSubscribe finished", "task_id", params.ID)
+	h.logger().DebugContext(ctx, "onSendTaskSubscribe finished", "task_id", params.ID)
 }
 
 func (h *Handler) waitSubscribeReady(ctx context.Context, taskID string, errCh <-chan error) (<-chan StreamingEvent, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			h.logger.DebugContext(ctx, "Context canceled during task subscription", "task_id", taskID)
+			h.logger().DebugContext(ctx, "Context canceled during task subscription", "task_id", taskID)
 			return nil, context.Canceled
 		case err := <-errCh:
 			if err == nil {
 				continue
 			}
-			h.logger.WarnContext(ctx, "Error occurred during task processing", "error", err, "task_id", taskID)
+			h.logger().WarnContext(ctx, "Error occurred during task processing", "error", err, "task_id", taskID)
 			return nil, err
 		default:
 		}
-		eventCh, err := h.queue.Subscribe(ctx, taskID)
+		eventCh, err := h.queue().Subscribe(ctx, taskID)
 		if err != nil {
 			if errors.Is(err, ErrTaskNotFound) {
-				h.logger.DebugContext(ctx, "Task not found during subscription, retrying", "task_id", taskID)
+				h.logger().DebugContext(ctx, "Task not found during subscription, retrying", "task_id", taskID)
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
-			h.logger.WarnContext(ctx, "Failed to subscribe to task events", "error", err, "task_id", taskID)
+			h.logger().WarnContext(ctx, "Failed to subscribe to task events", "error", err, "task_id", taskID)
 			return nil, err
 		}
 		return eventCh, nil
@@ -865,33 +843,23 @@ func FromContext(ctx context.Context) (*http.Request, *jsonrpc.Request) {
 }
 
 func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq *jsonrpc.Request, params TaskSendParams) error {
-	h.logger.DebugContext(ctx, "processTask called", "task_id", params.ID)
+	h.logger().DebugContext(ctx, "processTask called", "task_id", params.ID)
 	if params.PushNotification != nil {
 		if err := h.processSetPushNotification(ctx, &TaskPushNotificationConfig{
 			ID:                     params.ID,
 			PushNotificationConfig: *params.PushNotification,
 			Metadata:               params.Metadata,
 		}); err != nil {
-			h.logger.WarnContext(ctx, "Failed to set push notification during task processing", "error", err, "task_id", params.ID)
+			h.logger().WarnContext(ctx, "Failed to set push notification during task processing", "error", err, "task_id", params.ID)
 			return err
 		}
 	}
-	/*
-		task := &Task{
-			ID: params.ID,
-			Status: TaskStatus{
-				State: TaskStateSubmitted,
-			},
-			Metadata:  params.Metadata,
-			Artifacts: make([]Artifact, 0),
-			History:   make([]Message, 0),
-		}*/
 	if params.SessionID == nil {
-		params.SessionID = Ptr(h.sessIDGenerator(httpReq))
+		params.SessionID = Ptr(h.opts.SessionIDGenerator(httpReq))
 	}
-	task, err := h.store.UpsertTask(ctx, params)
+	task, err := h.store().UpsertTask(ctx, params)
 	if err != nil {
-		h.logger.WarnContext(ctx, "Failed to create task", "error", err, "task_id", params.ID)
+		h.logger().WarnContext(ctx, "Failed to create task", "error", err, "task_id", params.ID)
 		return err
 	}
 	ctx = withRawRequet(ctx, httpReq, rpcReq)
@@ -901,23 +869,23 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(h.taskStatePollingInterval)
+		ticker := time.NewTicker(h.opts.TaskStatePollingInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-cctx.Done():
-				h.logger.DebugContext(ctx, "Context canceled during task state polling", "task_id", task.ID)
+				h.logger().DebugContext(ctx, "Context canceled during task state polling", "task_id", task.ID)
 				return
 			case <-ticker.C:
-				task, err := h.store.GetTask(cctx, task.ID, Ptr(0))
+				task, err := h.store().GetTask(cctx, task.ID, Ptr(0))
 				if err != nil {
-					h.logger.WarnContext(ctx, "Failed to get task during state polling", "error", err, "task_id", task.ID)
+					h.logger().WarnContext(ctx, "Failed to get task during state polling", "error", err, "task_id", task.ID)
 					continue
 				}
 				if task.Status.State.Final() {
-					h.logger.DebugContext(ctx, "Task state polling finished", "task_id", task.ID, "state", task.Status.State)
+					h.logger().DebugContext(ctx, "Task state polling finished", "task_id", task.ID, "state", task.Status.State)
 					if task.Status.State == TaskStateCanceled {
-						h.logger.DebugContext(ctx, "Task was canceled", "task_id", task.ID)
+						h.logger().DebugContext(ctx, "Task was canceled", "task_id", task.ID)
 						cancel()
 					}
 					return
@@ -927,10 +895,10 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 	}()
 	tr := h.NewTaskResponder(task.ID)
 	if err := h.agent.Invoke(cctx, tr, task); err != nil {
-		h.logger.WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)
+		h.logger().WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)
 	}
 	cancel()
 	wg.Wait()
-	h.logger.DebugContext(ctx, "Task processing finished", "task_id", task.ID)
+	h.logger().DebugContext(ctx, "Task processing finished", "task_id", task.ID)
 	return nil
 }
