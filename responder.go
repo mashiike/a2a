@@ -8,7 +8,7 @@ import (
 
 type TaskResponder interface {
 	WriteArtifact(ctx context.Context, artifact Artifact, metadata map[string]any) error
-	SetStatus(ctx context.Context, status TaskStatus, final bool, metadata map[string]any) error
+	SetStatus(ctx context.Context, status TaskStatus, metadata map[string]any) error
 }
 
 type baseTaskResponder struct {
@@ -49,7 +49,7 @@ func (tr *baseTaskResponder) stateTransitionHistory() bool {
 	return tr.h.card.Capabilities.StateTransitionHistory != nil && *tr.h.card.Capabilities.StateTransitionHistory
 }
 
-func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, final bool, metadata map[string]any) error {
+func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, metadata map[string]any) error {
 	if err := tr.h.store.UpdateStatus(ctx, tr.taskID, status); err != nil {
 		return err
 	}
@@ -59,7 +59,7 @@ func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, f
 			StatusUpdated: &TaskStatusUpdateEvent{
 				ID:       tr.taskID,
 				Status:   status,
-				Final:    final,
+				Final:    status.State.Final(),
 				Metadata: metadata,
 			},
 		}); err != nil {
@@ -67,11 +67,7 @@ func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, f
 		}
 	}
 	if tr.stateTransitionHistory() && status.Message != nil {
-		task, err := tr.h.store.GetTask(ctx, tr.taskID)
-		if err != nil {
-			errs = append(errs, err)
-		}
-		if err := tr.h.store.AppendHistory(ctx, task.SessionID, *status.Message); err != nil {
+		if err := tr.h.store.AppendHistory(ctx, tr.taskID, *status.Message); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -96,7 +92,7 @@ func (tr *baseTaskResponder) notify(ctx context.Context) error {
 	if cfg == nil {
 		return nil
 	}
-	task, err := tr.h.store.GetTask(ctx, tr.taskID)
+	task, err := tr.h.store.GetTask(ctx, tr.taskID, nil)
 	if err != nil {
 		return err
 	}

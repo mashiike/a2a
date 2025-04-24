@@ -8,18 +8,17 @@ import (
 
 // Store defines the interface for managing tasks and their associated data.
 type Store interface {
-	// GetHistory retrieves the message history for a given session ID.
-	// If historyLength is negative, all messages are returned.
-	GetHistory(ctx context.Context, sessionID string, historyLength int) ([]Message, error)
-
-	// AppendHistory appends a message to the history of a given session ID.
-	AppendHistory(ctx context.Context, sessionID string, message Message) error
-
-	// CreateTask creates a new task in the store.
-	CreateTask(ctx context.Context, task *Task) error
+	// UpsertTask creates or updates a task in the store.
+	// If the task already exists, it appends a message to the task's history and updates its metadata.
+	// If the task does not exist, it creates a new task with a "submitted" status.
+	// Returns the task with the applied updates.
+	UpsertTask(ctx context.Context, params TaskSendParams) (*Task, error)
 
 	// GetTask retrieves a task by its ID.
-	GetTask(ctx context.Context, taskID string) (*Task, error)
+	GetTask(ctx context.Context, taskID string, historyLength *int) (*Task, error)
+
+	// AppendHistory appends a message to the history of a given task ID.
+	AppendHistory(ctx context.Context, taskID string, message Message) error
 
 	// UpdateStatus updates the status of a task by its ID.
 	UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error
@@ -37,12 +36,69 @@ type PushNotificationStore interface {
 	GetTaskPushNotification(ctx context.Context, taskID string) (*TaskPushNotificationConfig, error)
 }
 
+// MutateTask is utility function for implementing the Store interface.
+// if cur is nil, it will return the new task.
+// if cur is not nil, it will return the updated task.
+func MutateTask(cur *Task, params TaskSendParams) *Task {
+	if cur == nil {
+		task := &Task{
+			ID:       params.ID,
+			Metadata: params.Metadata,
+			Status: TaskStatus{
+				State: TaskStateSubmitted,
+			},
+			History: []Message{
+				params.Message,
+			},
+			Artifacts: []Artifact{},
+		}
+		if params.SessionID != nil {
+			task.SessionID = *params.SessionID
+		}
+		return task
+	}
+	if cur.Status.State == TaskStateCompleted {
+		return cur
+	}
+	cloned := *cur
+	// Update the task with the new parameters
+	for k, v := range params.Metadata {
+		if v == nil {
+			delete(cloned.Metadata, k)
+		} else {
+			cloned.Metadata[k] = v
+		}
+	}
+	cloned.History = append(cloned.History, params.Message)
+	return &cloned
+}
+
+// TruncateHistory is utility function for implementing the Store interface.
+// it will truncate the history of the task to the specified length.
+// if length is negative, it will return all messages.
+// if length is nil, it will return the task as is.
+// if length is 0, it will return the task with an empty history.
+// if length is greater than the current history length, truncate and return only last N messages.
+func TruncateHistory(task *Task, length *int) *Task {
+	cloned := *task
+	if length == nil || *length < 0 {
+		return &cloned
+	}
+	if *length == 0 {
+		cloned.History = []Message{}
+		return &cloned
+	}
+	if len(cloned.History) > *length {
+		cloned.History = append([]Message{}, cloned.History[len(cloned.History)-*length:]...)
+	}
+	return &cloned
+}
+
 // InMemoryStore is an in-memory implementation of the Store and PushNotificationStore interfaces.
 type InMemoryStore struct {
 	mu                sync.RWMutex
 	initOnce          sync.Once
 	tasks             map[string]*Task
-	history           map[string][]Message
 	pushNotifications map[string]*TaskPushNotificationConfig
 }
 
@@ -50,64 +106,44 @@ type InMemoryStore struct {
 func (s *InMemoryStore) init() {
 	s.initOnce.Do(func() {
 		s.tasks = make(map[string]*Task)
-		s.history = make(map[string][]Message)
 		s.pushNotifications = make(map[string]*TaskPushNotificationConfig)
 	})
 }
 
 // CreateTask creates a new task in the in-memory store.
-func (s *InMemoryStore) CreateTask(ctx context.Context, task *Task) error {
+func (s *InMemoryStore) UpsertTask(ctx context.Context, params TaskSendParams) (*Task, error) {
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	//clone task
-	cloned := *task
-	s.tasks[task.ID] = &cloned
-	return nil
+	cur := s.tasks[params.ID]
+	stored := MutateTask(cur, params)
+	s.tasks[params.ID] = stored
+	return TruncateHistory(stored, params.HistoryLength), nil
 }
 
 // GetTask retrieves a task by its ID from the in-memory store.
-func (s *InMemoryStore) GetTask(ctx context.Context, taskID string) (*Task, error) {
+func (s *InMemoryStore) GetTask(ctx context.Context, taskID string, historyLength *int) (*Task, error) {
 	s.init()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if task, ok := s.tasks[taskID]; ok {
-		// clone task
-		cloned := *task
-		return &cloned, nil
+		return TruncateHistory(task, historyLength), nil
 	}
 	return nil, ErrTaskNotFound
 }
 
-// AppendHistory appends a message to the history of a given session ID.
-func (s *InMemoryStore) AppendHistory(ctx context.Context, sessionID string, message Message) error {
+// AppendHistory appends a message to the history of a given task ID.
+func (s *InMemoryStore) AppendHistory(ctx context.Context, taskID string, message Message) error {
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.history[sessionID]; !ok {
-		s.history[sessionID] = []Message{}
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return ErrTaskNotFound
 	}
-	s.history[sessionID] = append(s.history[sessionID], message)
+	task.History = append(task.History, message)
+	s.tasks[taskID] = task
 	return nil
-}
-
-// GetHistory retrieves the message history for a given session ID.
-// If historyLength is negative, all messages are returned.
-func (s *InMemoryStore) GetHistory(ctx context.Context, sessionID string, historyLength int) ([]Message, error) {
-	s.init()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if messages, ok := s.history[sessionID]; ok {
-		if historyLength < 0 {
-			return messages, nil
-		}
-		// return the last N messages
-		if len(messages) > historyLength {
-			return messages[len(messages)-historyLength:], nil
-		}
-		return messages, nil
-	}
-	return []Message{}, nil
 }
 
 // UpdateStatus updates the status of a task by its ID.

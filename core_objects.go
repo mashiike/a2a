@@ -168,6 +168,9 @@ func (t *Task) Validate() error {
 			return err
 		}
 	}
+	if t.Metadata == nil {
+		t.Metadata = make(map[string]any)
+	}
 	return nil
 }
 
@@ -207,6 +210,9 @@ func (e *TaskStatusUpdateEvent) Validate() error {
 	if err := e.Status.Validate(); err != nil {
 		return err
 	}
+	if e.Metadata == nil {
+		e.Metadata = make(map[string]any)
+	}
 	return nil
 }
 
@@ -224,6 +230,9 @@ func (e *TaskArtifactUpdateEvent) Validate() error {
 	}
 	if err := e.Artifact.Validate(); err != nil {
 		return err
+	}
+	if e.Metadata == nil {
+		e.Metadata = make(map[string]any)
 	}
 	return nil
 }
@@ -309,6 +318,9 @@ func (p *TaskIDParams) Validate() error {
 	if p.ID == "" {
 		return errors.New("id is required")
 	}
+	if p.Metadata == nil {
+		p.Metadata = make(map[string]any)
+	}
 	return nil
 }
 
@@ -319,6 +331,9 @@ func (p *TaskSendParams) Validate() error {
 	}
 	if err := p.Message.Validate(); err != nil {
 		return err
+	}
+	if p.Metadata == nil {
+		p.Metadata = make(map[string]any)
 	}
 	if p.PushNotification != nil {
 		if err := p.PushNotification.Validate(); err != nil {
@@ -340,6 +355,34 @@ const (
 	TaskStateFailed        TaskState = "failed"
 	TaskStateUnknown       TaskState = "unknown"
 )
+
+func (s TaskState) String() string {
+	switch s {
+	case TaskStateSubmitted:
+		return "submitted"
+	case TaskStateWorking:
+		return "working"
+	case TaskStateInputRequired:
+		return "input-required"
+	case TaskStateCompleted:
+		return "completed"
+	case TaskStateCanceled:
+		return "canceled"
+	case TaskStateFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func (s TaskState) Final() bool {
+	switch s {
+	case TaskStateCompleted, TaskStateCanceled, TaskStateFailed, TaskStateInputRequired:
+		return true
+	default:
+		return false
+	}
+}
 
 // Artifact represents an artifact created by the agent.
 type Artifact struct {
@@ -388,6 +431,9 @@ func (m *Message) Validate() error {
 		if err := part.Validate(); err != nil {
 			return err
 		}
+	}
+	if m.Metadata == nil {
+		m.Metadata = make(map[string]any)
 	}
 	return nil
 }
@@ -524,6 +570,9 @@ func (t *TaskPushNotificationConfig) Validate() error {
 	}
 	if err := t.PushNotificationConfig.Validate(); err != nil {
 		return err
+	}
+	if t.Metadata == nil {
+		t.Metadata = make(map[string]any)
 	}
 	return nil
 }
