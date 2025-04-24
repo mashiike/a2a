@@ -24,12 +24,12 @@ func (h *Handler) NewTaskResponder(taskID string) TaskResponder {
 }
 
 func (tr *baseTaskResponder) WriteArtifact(ctx context.Context, artifact Artifact, metadata map[string]any) error {
-	if err := tr.h.store.UpdateArtifact(ctx, tr.taskID, artifact); err != nil {
+	if err := tr.h.store().UpdateArtifact(ctx, tr.taskID, artifact); err != nil {
 		return err
 	}
 	var errs []error
-	if tr.h.queue != nil {
-		if err := tr.h.queue.Publish(ctx, StreamingEvent{
+	if queue := tr.h.queue(); queue != nil {
+		if err := queue.Publish(ctx, StreamingEvent{
 			ArtifactUpdated: &TaskArtifactUpdateEvent{
 				ID:       tr.taskID,
 				Artifact: artifact,
@@ -50,12 +50,12 @@ func (tr *baseTaskResponder) stateTransitionHistory() bool {
 }
 
 func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, metadata map[string]any) error {
-	if err := tr.h.store.UpdateStatus(ctx, tr.taskID, status); err != nil {
+	if err := tr.h.store().UpdateStatus(ctx, tr.taskID, status); err != nil {
 		return err
 	}
 	var errs []error
-	if tr.h.queue != nil {
-		if err := tr.h.queue.Publish(ctx, StreamingEvent{
+	if queue := tr.h.queue(); queue != nil {
+		if err := queue.Publish(ctx, StreamingEvent{
 			StatusUpdated: &TaskStatusUpdateEvent{
 				ID:       tr.taskID,
 				Status:   status,
@@ -67,7 +67,7 @@ func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, m
 		}
 	}
 	if tr.stateTransitionHistory() && status.Message != nil {
-		if err := tr.h.store.AppendHistory(ctx, tr.taskID, *status.Message); err != nil {
+		if err := tr.h.store().AppendHistory(ctx, tr.taskID, *status.Message); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -78,7 +78,7 @@ func (tr *baseTaskResponder) SetStatus(ctx context.Context, status TaskStatus, m
 }
 
 func (tr *baseTaskResponder) notify(ctx context.Context) error {
-	store, ok := tr.h.store.(PushNotificationStore)
+	store, ok := tr.h.store().(PushNotificationStore)
 	if !ok {
 		return nil
 	}
@@ -92,15 +92,15 @@ func (tr *baseTaskResponder) notify(ctx context.Context) error {
 	if cfg == nil {
 		return nil
 	}
-	task, err := tr.h.store.GetTask(ctx, tr.taskID, nil)
+	task, err := tr.h.store().GetTask(ctx, tr.taskID, nil)
 	if err != nil {
 		return err
 	}
-	req, err := tr.h.notificationRequestBuilder(ctx, cfg, task)
+	req, err := tr.h.opts.PushNotificationRequestBuilder(ctx, cfg, task)
 	if err != nil {
 		return err
 	}
-	resp, err := tr.h.notificationHTTPClient.Do(req)
+	resp, err := tr.h.opts.PushNotificationHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -111,6 +111,6 @@ func (tr *baseTaskResponder) notify(ctx context.Context) error {
 	if err != nil {
 		bs = []byte("[unable to read response body]")
 	}
-	tr.h.logger.WarnContext(ctx, "failed to send notification", "status_code", resp.StatusCode, "task_id", tr.taskID, "response", string(bs))
+	tr.h.logger().WarnContext(ctx, "failed to send notification", "status_code", resp.StatusCode, "task_id", tr.taskID, "response", string(bs))
 	return nil
 }
