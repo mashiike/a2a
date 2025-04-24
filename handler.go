@@ -894,6 +894,7 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 			}
 		}
 	}()
+	task.Message = params.Message
 	tr := h.NewTaskResponder(task.ID)
 	if err := h.agent.Invoke(cctx, tr, task); err != nil {
 		h.logger().WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)

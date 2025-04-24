@@ -142,6 +142,7 @@ type Task struct {
 	ID        string         `json:"id"`
 	SessionID string         `json:"sessionId"`
 	Status    TaskStatus     `json:"status"`
+	Message   Message        `json:"-"` // incoming message on tasks/send or tasks/sendSubscribe
 	History   []Message      `json:"history,omitempty"`
 	Artifacts []Artifact     `json:"artifacts,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
