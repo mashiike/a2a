@@ -146,14 +146,9 @@ func (s *InMemoryStore) AppendHistory(ctx context.Context, taskID string, messag
 	return nil
 }
 
-// UpdateStatus updates the status of a task by its ID.
-func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error {
-	s.init()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	task, ok := s.tasks[taskID]
-	if !ok {
-		return ErrTaskNotFound
+func MutateTaskStatus(task *Task, status TaskStatus) (*Task, bool, error) {
+	if task == nil {
+		return nil, false, ErrTaskNotFound
 	}
 	if status.Timestamp == nil {
 		// Set the timestamp to the current time
@@ -163,20 +158,68 @@ func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status 
 	if task.Status.Timestamp != nil {
 		before, err := time.Parse(time.RFC3339, *task.Status.Timestamp)
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		after, err := time.Parse(time.RFC3339, *status.Timestamp)
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		if after.Before(before) {
 			// Ignore the update if the new timestamp is before the current one
-			return nil
+			return task, false, nil
 		}
 	}
-	task.Status = status
-	s.tasks[taskID] = task
+	cloned := *task
+	cloned.Status = status
+	return &cloned, true, nil
+}
+
+// UpdateStatus updates the status of a task by its ID.
+func (s *InMemoryStore) UpdateStatus(ctx context.Context, taskID string, status TaskStatus) error {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[taskID]
+	if !ok || task == nil {
+		return ErrTaskNotFound
+	}
+	after, isUpdated, err := MutateTaskStatus(task, status)
+	if err != nil {
+		return err
+	}
+	if !isUpdated {
+		return nil
+	}
+	s.tasks[taskID] = after
 	return nil
+}
+
+func MutateTaskArtifact(task *Task, artifact Artifact) (*Task, error) {
+	if task == nil {
+		return nil, ErrTaskNotFound
+	}
+	if artifact.Index < 0 {
+		return nil, ErrTaskArtifactIndexInvalid
+	}
+	cloned := *task
+	if artifact.Append != nil && *artifact.Append {
+		if artifact.Index < len(task.Artifacts) {
+			cloned.Artifacts[artifact.Index].Parts = append(cloned.Artifacts[artifact.Index].Parts, artifact.Parts...)
+			return &cloned, nil
+		}
+		return nil, ErrTaskArtifactNotFound
+	}
+	if artifact.Index >= len(task.Artifacts) {
+		// Update existing artifact
+		cloned.Artifacts[artifact.Index] = artifact
+	} else {
+		// resize the artifacts slice
+		artifacts := make([]Artifact, artifact.Index+1)
+		copy(artifacts, cloned.Artifacts)
+		artifacts[artifact.Index] = artifact
+		cloned.Artifacts = artifacts
+	}
+	return &cloned, nil
 }
 
 // UpdateArtifact updates or appends an artifact to a task by its ID.
@@ -184,21 +227,16 @@ func (s *InMemoryStore) UpdateArtifact(ctx context.Context, taskID string, artif
 	s.init()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if task, ok := s.tasks[taskID]; ok {
-		if artifact.Index < len(task.Artifacts) {
-			// Update existing artifact
-			task.Artifacts[artifact.Index] = artifact
-		} else {
-			// resize the artifacts slice
-			artifacts := make([]Artifact, artifact.Index+1)
-			copy(artifacts, task.Artifacts)
-			artifacts[artifact.Index] = artifact
-			task.Artifacts = artifacts
-		}
-		s.tasks[taskID] = task
-		return nil
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return ErrTaskNotFound
 	}
-	return ErrTaskNotFound
+	after, err := MutateTaskArtifact(task, artifact)
+	if err != nil {
+		return err
+	}
+	s.tasks[taskID] = after
+	return nil
 }
 
 // CreateTaskPushNotification creates a push notification configuration for a task.
