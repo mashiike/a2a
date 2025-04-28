@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
+	"net"
 
 	"github.com/mashiike/a2a"
 	"github.com/redis/go-redis/v9"
@@ -52,14 +52,8 @@ func (ps *PubSub) Subscribe(ctx context.Context, taskID string) (<-chan a2a.Stre
 	go func() {
 		defer close(ch)
 		defer func() {
-			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := sub.Unsubscribe(cctx, channel); err != nil {
-				slog.Error("failed to unsubscribe", "component", "redis pubsub", "error", err)
-
-			}
 			if err := sub.Close(); err != nil {
-				slog.Error("failed to receive message", "component", "redis pubsub", "error", err)
+				slog.Error("failed to close subscription", "component", "redis pubsub", "error", err)
 				return
 			}
 		}()
@@ -76,7 +70,12 @@ func (ps *PubSub) Subscribe(ctx context.Context, taskID string) (<-chan a2a.Stre
 				if errors.Is(err, context.Canceled) || errors.Is(err, redis.Nil) || errors.Is(err, context.DeadlineExceeded) {
 					return
 				}
+				var netErr *net.OpError
+				if errors.As(err, &netErr) && netErr.Err.Error() == "use of closed network connection" {
+					return
+				}
 				slog.Error("failed to receive message", "component", "redis pubsub", "error", err)
+				return
 			}
 
 			var event a2a.StreamingEvent

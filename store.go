@@ -80,6 +80,9 @@ func MutateTask(cur *Task, params TaskSendParams) *Task {
 // if length is 0, it will return the task with an empty history.
 // if length is greater than the current history length, truncate and return only last N messages.
 func TruncateHistory(task *Task, length *int) *Task {
+	if task == nil {
+		return nil
+	}
 	cloned := *task
 	if length == nil || *length < 0 {
 		return &cloned
@@ -209,7 +212,7 @@ func MutateTaskArtifact(task *Task, artifact Artifact) (*Task, error) {
 		}
 		return nil, ErrTaskArtifactNotFound
 	}
-	if artifact.Index >= len(task.Artifacts) {
+	if artifact.Index < len(task.Artifacts) {
 		// Update existing artifact
 		cloned.Artifacts[artifact.Index] = artifact
 	} else {
