@@ -1,4 +1,4 @@
-version: '3.8'
+version: '3.9'
 
 services:
   redis:
@@ -10,6 +10,13 @@ services:
     command: ["redis-server", "--requirepass", "a2ago"]
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "a2ago", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   minio:
     image: minio/minio:latest
     container_name: minio
@@ -22,5 +29,11 @@ services:
       MINIO_ROOT_USER: minio0admin
       MINIO_ROOT_PASSWORD: minio0admin
     command: server --console-address ":9001" /data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 volumes:
   redis-data:
