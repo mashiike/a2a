@@ -110,12 +110,12 @@ func (s *Store) getTask(ctx context.Context, taskID string) (*a2a.Task, *string,
 		}
 		return nil, nil, err
 	}
+	defer resp.Body.Close()
 	var task a2a.Task
 	bs, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
 
 	if err := s.opts.Unmarshaller(bs, &task); err != nil {
 		return nil, nil, err
