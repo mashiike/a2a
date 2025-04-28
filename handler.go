@@ -19,15 +19,15 @@ import (
 
 // Agent is an interface for processing tasks.
 type Agent interface {
-	Invoke(ctx context.Context, r TaskResponder, task *Task) error
+	Invoke(ctx context.Context, m TaskManager, task *Task) error
 }
 
 // AgentFunc is a type that implements the Agent interface as a function.
-type AgentFunc func(ctx context.Context, r TaskResponder, task *Task) error
+type AgentFunc func(ctx context.Context, m TaskManager, task *Task) error
 
 // Invoke calls the AgentFunc.
-func (f AgentFunc) Invoke(ctx context.Context, r TaskResponder, task *Task) error {
-	return f(ctx, r, task)
+func (f AgentFunc) Invoke(ctx context.Context, m TaskManager, task *Task) error {
+	return f(ctx, m, task)
 }
 
 // Handler is a struct for handling JSON-RPC requests.
@@ -427,11 +427,11 @@ func (h *Handler) onCancelTask(w http.ResponseWriter, httpReq *http.Request, rpc
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
-	tr := h.NewTaskResponder(params.ID)
+	m := h.NewTaskManager(params.ID)
 	canceledStatus := TaskStatus{
 		State: TaskStateCanceled,
 	}
-	if err := tr.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
+	if err := m.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
 		h.logger().WarnContext(httpReq.Context(), "Failed to cancel task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
@@ -895,7 +895,7 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 		}
 	}()
 	task.Message = params.Message
-	tr := h.NewTaskResponder(task.ID)
+	tr := h.NewTaskManager(task.ID)
 	if err := h.agent.Invoke(cctx, tr, task); err != nil {
 		h.logger().WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)
 	}
