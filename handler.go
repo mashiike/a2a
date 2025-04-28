@@ -17,17 +17,50 @@ import (
 	"github.com/mashiike/a2a/jsonrpc"
 )
 
+type AgentRequest struct {
+	// HTTPHeader is http.Request.Header
+	// if you need raw *http.Request use httpReq, rpcReq := FromContext(ctx)
+	HTTPHeader http.Header
+
+	// Host is the HTTP host header (or request host) at the time the request was received.
+	Host string
+
+	// RPCRequestID is JSON-RPC Request ID
+	RPCRequestID *jsonrpc.RequestID
+
+	// RPCMethod is JSON-RPC method
+	RPCMethod string
+
+	// Params is tasks/send or tasks/sendSubscribe method params
+	Params TaskSendParams
+
+	// Task is a snapshot of the task at the time the request was received.
+	// To access the latest task state during processing, use TaskManager.GetTask.
+	Task *Task
+}
+
+func (r *AgentRequest) TaskID() string {
+	return r.Params.ID
+}
+
+func (r *AgentRequest) SessionID() string {
+	if r.Params.SessionID == nil {
+		return ""
+	}
+	return *r.Params.SessionID
+}
+
 // Agent is an interface for processing tasks.
 type Agent interface {
-	Invoke(ctx context.Context, m TaskManager, task *Task) error
+	Invoke(ctx context.Context, m TaskManager, r *AgentRequest) error
 }
 
 // AgentFunc is a type that implements the Agent interface as a function.
-type AgentFunc func(ctx context.Context, m TaskManager, task *Task) error
+type AgentFunc func(ctx context.Context, m TaskManager, r *AgentRequest) error
 
 // Invoke calls the AgentFunc.
-func (f AgentFunc) Invoke(ctx context.Context, m TaskManager, task *Task) error {
-	return f(ctx, m, task)
+func (f AgentFunc) Invoke(ctx context.Context, m TaskManager, r *AgentRequest) error {
+	return f(ctx, m, r)
 }
 
 // Handler is a struct for handling JSON-RPC requests.
@@ -894,9 +927,15 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 			}
 		}
 	}()
-	task.Message = params.Message
+	req := &AgentRequest{
+		HTTPHeader:   httpReq.Header,
+		Host:         httpReq.Host,
+		RPCRequestID: rpcReq.ID,
+		Params:       params,
+		Task:         task,
+	}
 	tr := h.NewTaskManager(task.ID)
-	if err := h.agent.Invoke(cctx, tr, task); err != nil {
+	if err := h.agent.Invoke(cctx, tr, req); err != nil {
 		h.logger().WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)
 	}
 	cancel()

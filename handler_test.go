@@ -43,11 +43,11 @@ func TestHandler_TasksSendSync(t *testing.T) {
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
@@ -145,24 +145,23 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 	}()
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
-		// Start asynchronous processing
 		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 		}, nil)
 
-		wg.Add(1) // Increment WaitGroup counter
+		wg.Add(1)
 		go func() {
-			defer wg.Done() // Decrement WaitGroup counter when done
+			defer wg.Done()
 			<-done
 			m.WriteArtifact(
 				ctx,
@@ -263,30 +262,28 @@ func TestHandler_TasksCancel(t *testing.T) {
 	}()
 	cancelCtxCalled := make(chan struct{})
 	var wg sync.WaitGroup
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
-		// Start background processing
 		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 		}, nil)
 
-		wg.Add(1) // Increment WaitGroup counter
+		wg.Add(1)
 		go func() {
-			defer wg.Done() // Decrement WaitGroup counter when done
+			defer wg.Done()
 			select {
 			case <-ctx.Done():
-				// Notify that the context was canceled
 				close(cancelCtxCalled)
 				return
-			case <-time.After(5 * time.Second): // Simulate long-running task
+			case <-time.After(5 * time.Second):
 				m.SetStatus(ctx, TaskStatus{
 					State: TaskStateCompleted,
 				}, nil)
@@ -379,11 +376,11 @@ func TestHandler_TasksSendSubscribeSync(t *testing.T) {
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
@@ -490,8 +487,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 	}()
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		// Set initial state to Working with a "Waiting Ready" message
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
 		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 			Message: &Message{
@@ -505,9 +501,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 		go func() {
 			ctx := context.Background()
 			defer wg.Done()
-			// Wait for the signal to proceed
 			<-done
-			// Update state to Working with a "Processing..." message
 			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateWorking,
 				Message: &Message{
@@ -517,7 +511,6 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 					},
 				},
 			}, nil)
-			// Finalize with Completed state and an artifact
 			m.WriteArtifact(ctx, Artifact{
 				Index: 2,
 				Parts: []Part{
@@ -648,11 +641,11 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 	}))
 	defer notificationServer.Close()
 
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
@@ -783,8 +776,8 @@ func TestHandler_MultiTurnConversation(t *testing.T) {
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, m TaskManager, task *Task) error {
-		if len(task.History) == 1 {
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		if len(r.Task.History) == 1 {
 			// First turn: return InputRequired
 			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateInputRequired,
