@@ -47,16 +47,16 @@ func main() {
 		},
 	}
 
-	agent := a2a.AgentFunc(func(ctx context.Context, tr a2a.TaskResponder, task *a2a.Task) error {
+	agent := a2a.AgentFunc(func(ctx context.Context, tr a2a.TaskManager, task *a2a.Task) error {
 		log.Printf("Received task: %s", task.ID)
-		tr.SetStatus(ctx, a2a.TaskStatus{State: a2a.TaskStateWorking}, false, nil)
-		tr.WriteArtifact(ctx, a2a.Artifact{
+		m.SetStatus(ctx, a2a.TaskStatus{State: a2a.TaskStateWorking}, false, nil)
+		m.WriteArtifact(ctx, a2a.Artifact{
 			Index: 0,
 			Parts: []a2a.Part{
 				a2a.TextPart("Hello, this is a response from the server."),
 			},
 		}, nil)
-		tr.SetStatus(ctx, a2a.TaskStatus{State: a2a.TaskStateCompleted}, true, nil)
+		m.SetStatus(ctx, a2a.TaskStatus{State: a2a.TaskStateCompleted}, true, nil)
 		return nil
 	})
 
@@ -74,7 +74,7 @@ The server functionality can be implemented by registering a struct that satisfi
 
 ```go
 type Agent interface {
-	Invoke(ctx context.Context, r TaskResponder, task *Task) error
+	Invoke(ctx context.Context, m TaskManager, task *Task) error
 }
 ```
 

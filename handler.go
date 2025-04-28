@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,17 +18,50 @@ import (
 	"github.com/mashiike/a2a/jsonrpc"
 )
 
+type AgentRequest struct {
+	// HTTPHeader is http.Request.Header
+	// if you need raw *http.Request use httpReq, rpcReq := FromContext(ctx)
+	HTTPHeader http.Header
+
+	// Host is the HTTP host header (or request host) at the time the request was received.
+	Host string
+
+	// RPCRequestID is JSON-RPC Request ID
+	RPCRequestID *jsonrpc.RequestID
+
+	// RPCMethod is JSON-RPC method
+	RPCMethod string
+
+	// Params is tasks/send or tasks/sendSubscribe method params
+	Params TaskSendParams
+
+	// Task is a snapshot of the task at the time the request was received.
+	// To access the latest task state during processing, use TaskManager.GetTask.
+	Task *Task
+}
+
+func (r *AgentRequest) TaskID() string {
+	return r.Params.ID
+}
+
+func (r *AgentRequest) SessionID() string {
+	if r.Params.SessionID == nil {
+		return ""
+	}
+	return *r.Params.SessionID
+}
+
 // Agent is an interface for processing tasks.
 type Agent interface {
-	Invoke(ctx context.Context, r TaskResponder, task *Task) error
+	Invoke(ctx context.Context, m TaskManager, r *AgentRequest) error
 }
 
 // AgentFunc is a type that implements the Agent interface as a function.
-type AgentFunc func(ctx context.Context, r TaskResponder, task *Task) error
+type AgentFunc func(ctx context.Context, m TaskManager, r *AgentRequest) error
 
 // Invoke calls the AgentFunc.
-func (f AgentFunc) Invoke(ctx context.Context, r TaskResponder, task *Task) error {
-	return f(ctx, r, task)
+func (f AgentFunc) Invoke(ctx context.Context, m TaskManager, r *AgentRequest) error {
+	return f(ctx, m, r)
 }
 
 // Handler is a struct for handling JSON-RPC requests.
@@ -301,15 +335,27 @@ func (h *Handler) rpcHandler(method string) (func(http.ResponseWriter, *http.Req
 
 // ServeRPC serves JSON-RPC responses as an HTTP handler.
 func (h *Handler) ServeRPC(w http.ResponseWriter, r *http.Request) {
-	h.logger().DebugContext(r.Context(), "ServeRPC called", "method", r.Method, "url", r.URL.String())
+	ctx := r.Context()
+	h.logger().DebugContext(ctx, "ServeRPC called", "method", r.Method, "url", r.URL.String())
 	if r.Method != http.MethodPost {
-		h.logger().DebugContext(r.Context(), "Method not allowed", "method", r.Method)
+		h.logger().DebugContext(ctx, "Method not allowed", "method", r.Method)
 		h.opts.MethodNotAllowedHandler.ServeHTTP(w, r)
 		return
 	}
+	bs, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.logger().DebugContext(ctx, "Failed to read HTTP Body", "err", err)
+		jsonrpc.WriteError(w, nil, &jsonrpc.ErrorMessage{
+			Code:    jsonrpc.CodeParseError,
+			Message: jsonrpc.CodeMessage(jsonrpc.CodeParseError),
+		}, http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(bs))
 	var req jsonrpc.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.logger().DebugContext(r.Context(), "Failed to parse JSON-RPC request", "error", err)
+	if err := json.Unmarshal(bs, &req); err != nil {
+		h.logger().DebugContext(ctx, "Failed to parse JSON-RPC request", "error", err)
 		jsonrpc.WriteError(w, nil, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeParseError,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeParseError),
@@ -327,7 +373,7 @@ func (h *Handler) ServeRPC(w http.ResponseWriter, r *http.Request) {
 		validationDiagnostic["params"] = errors.New("params is required")
 	}
 	if len(validationDiagnostic) > 0 {
-		h.logger().DebugContext(r.Context(), "Invalid JSON-RPC request", "diagnostic", validationDiagnostic)
+		h.logger().DebugContext(ctx, "Invalid JSON-RPC request", "diagnostic", validationDiagnostic)
 		jsonrpc.WriteError(w, &req, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeInvalidRequest,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeInvalidRequest),
@@ -335,7 +381,9 @@ func (h *Handler) ServeRPC(w http.ResponseWriter, r *http.Request) {
 		}, http.StatusBadRequest)
 		return
 	}
-	h.logger().DebugContext(r.Context(), "JSON-RPC method invoked", "method", req.Method)
+	h.logger().DebugContext(ctx, "JSON-RPC method invoked", "method", req.Method)
+	ctx = withRawRequet(ctx, r, &req)
+	r = r.WithContext(ctx)
 	switch req.Method {
 	case jsonrpc.MethodTasksSend:
 		h.onSendTask(w, r, &req)
@@ -360,11 +408,11 @@ func (h *Handler) ServeRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		if rpcHandler, ok := h.rpcHandler(req.Method); ok {
-			h.logger().DebugContext(r.Context(), "Custom JSON-RPC method invoked", "method", req.Method)
+			h.logger().DebugContext(ctx, "Custom JSON-RPC method invoked", "method", req.Method)
 			rpcHandler(w, r, &req)
 			return
 		}
-		h.logger().DebugContext(r.Context(), "JSON-RPC method not found", "method", req.Method)
+		h.logger().DebugContext(ctx, "JSON-RPC method not found", "method", req.Method)
 		jsonrpc.WriteError(w, &req, &jsonrpc.ErrorMessage{
 			Code:    jsonrpc.CodeMethodNotFound,
 			Message: jsonrpc.CodeMessage(jsonrpc.CodeMethodNotFound),
@@ -427,11 +475,11 @@ func (h *Handler) onCancelTask(w http.ResponseWriter, httpReq *http.Request, rpc
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}
-	tr := h.NewTaskResponder(params.ID)
+	m := h.NewTaskManager(params.ID)
 	canceledStatus := TaskStatus{
 		State: TaskStateCanceled,
 	}
-	if err := tr.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
+	if err := m.SetStatus(httpReq.Context(), canceledStatus, params.Metadata); err != nil {
 		h.logger().WarnContext(httpReq.Context(), "Failed to cancel task", "error", err, "task_id", params.ID)
 		h.handleTaskError(w, rpcReq, params.ID, err)
 		return
@@ -863,7 +911,6 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 		h.logger().WarnContext(ctx, "Failed to create task", "error", err, "task_id", params.ID)
 		return err
 	}
-	ctx = withRawRequet(ctx, httpReq, rpcReq)
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -894,9 +941,15 @@ func (h *Handler) processTask(ctx context.Context, httpReq *http.Request, rpcReq
 			}
 		}
 	}()
-	task.Message = params.Message
-	tr := h.NewTaskResponder(task.ID)
-	if err := h.agent.Invoke(cctx, tr, task); err != nil {
+	req := &AgentRequest{
+		HTTPHeader:   httpReq.Header,
+		Host:         httpReq.Host,
+		RPCRequestID: rpcReq.ID,
+		Params:       params,
+		Task:         task,
+	}
+	tr := h.NewTaskManager(task.ID)
+	if err := h.agent.Invoke(cctx, tr, req); err != nil {
 		h.logger().WarnContext(ctx, "Failed to invoke agent", "error", err, "task_id", task.ID)
 	}
 	cancel()

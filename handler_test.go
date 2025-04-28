@@ -17,18 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mutexWriter is a thread-safe wrapper for an io.Writer.
-type mutexWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (mw *mutexWriter) Write(p []byte) (n int, err error) {
-	mw.mu.Lock()
-	defer mw.mu.Unlock()
-	return mw.w.Write(p)
-}
-
 func TestHandler_TasksSendSync(t *testing.T) {
 	card := &AgentCard{
 		Name:               "Test Agent",
@@ -49,17 +37,17 @@ func TestHandler_TasksSendSync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
@@ -68,7 +56,7 @@ func TestHandler_TasksSendSync(t *testing.T) {
 		assert.Equal(t, "/", httpReq.URL.Path)
 		assert.Equal(t, "POST", httpReq.Method)
 		assert.Equal(t, jsonrpc.MethodTasksSend, rpcReq.Method)
-		tr.WriteArtifact(
+		m.WriteArtifact(
 			ctx,
 			Artifact{
 				Index: 0,
@@ -78,7 +66,7 @@ func TestHandler_TasksSendSync(t *testing.T) {
 			},
 			nil,
 		)
-		tr.SetStatus(ctx, TaskStatus{
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateCompleted,
 		}, nil)
 		return nil
@@ -149,7 +137,7 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -157,26 +145,25 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 	}()
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
-		// Start asynchronous processing
-		tr.SetStatus(ctx, TaskStatus{
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 		}, nil)
 
-		wg.Add(1) // Increment WaitGroup counter
+		wg.Add(1)
 		go func() {
-			defer wg.Done() // Decrement WaitGroup counter when done
+			defer wg.Done()
 			<-done
-			tr.WriteArtifact(
+			m.WriteArtifact(
 				ctx,
 				Artifact{
 					Index: 0,
@@ -186,7 +173,7 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 				},
 				nil,
 			)
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
 			}, nil)
 		}()
@@ -267,7 +254,7 @@ func TestHandler_TasksCancel(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -275,31 +262,29 @@ func TestHandler_TasksCancel(t *testing.T) {
 	}()
 	cancelCtxCalled := make(chan struct{})
 	var wg sync.WaitGroup
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
-		// Start background processing
-		tr.SetStatus(ctx, TaskStatus{
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 		}, nil)
 
-		wg.Add(1) // Increment WaitGroup counter
+		wg.Add(1)
 		go func() {
-			defer wg.Done() // Decrement WaitGroup counter when done
+			defer wg.Done()
 			select {
 			case <-ctx.Done():
-				// Notify that the context was canceled
 				close(cancelCtxCalled)
 				return
-			case <-time.After(5 * time.Second): // Simulate long-running task
-				tr.SetStatus(ctx, TaskStatus{
+			case <-time.After(5 * time.Second):
+				m.SetStatus(ctx, TaskStatus{
 					State: TaskStateCompleted,
 				}, nil)
 			}
@@ -385,24 +370,24 @@ func TestHandler_TasksSendSubscribeSync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
 		// Write an artifact and set the task status to completed
-		tr.WriteArtifact(
+		m.WriteArtifact(
 			ctx,
 			Artifact{
 				Index: 0,
@@ -412,7 +397,7 @@ func TestHandler_TasksSendSubscribeSync(t *testing.T) {
 			},
 			nil,
 		)
-		tr.SetStatus(ctx, TaskStatus{
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateCompleted,
 		}, nil)
 		return nil
@@ -494,7 +479,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -502,9 +487,8 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 	}()
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		// Set initial state to Working with a "Waiting Ready" message
-		tr.SetStatus(ctx, TaskStatus{
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 			Message: &Message{
 				Role: MessageRoleAgent,
@@ -517,10 +501,8 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 		go func() {
 			ctx := context.Background()
 			defer wg.Done()
-			// Wait for the signal to proceed
 			<-done
-			// Update state to Working with a "Processing..." message
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateWorking,
 				Message: &Message{
 					Role: MessageRoleAgent,
@@ -529,14 +511,13 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 					},
 				},
 			}, nil)
-			// Finalize with Completed state and an artifact
-			tr.WriteArtifact(ctx, Artifact{
+			m.WriteArtifact(ctx, Artifact{
 				Index: 2,
 				Parts: []Part{
 					TextPart("Final result."),
 				},
 			}, nil)
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
 			}, nil)
 		}()
@@ -643,7 +624,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -660,18 +641,18 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 	}))
 	defer notificationServer.Close()
 
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		assert.Equal(t, "test-task-id", task.ID)
-		assert.Equal(t, "test-session-id", task.SessionID)
-		assert.Len(t, task.History, 1)
-		msg := task.History[0]
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		assert.Equal(t, "test-task-id", r.Task.ID)
+		assert.Equal(t, "test-session-id", r.Task.SessionID)
+		assert.Len(t, r.Task.History, 1)
+		msg := r.Task.History[0]
 		assert.Equal(t, MessageRoleUser, msg.Role)
 		assert.Len(t, msg.Parts, 1)
 		assert.Equal(t, PartTypeText, msg.Parts[0].Type)
 		assert.EqualValues(t, Ptr("who are you?"), msg.Parts[0].Text)
 
 		// Start background processing
-		tr.SetStatus(ctx, TaskStatus{
+		m.SetStatus(ctx, TaskStatus{
 			State: TaskStateWorking,
 		}, nil)
 
@@ -680,7 +661,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 			defer wg.Done()
 			ctx := context.Background()
 			<-done
-			tr.WriteArtifact(
+			m.WriteArtifact(
 				ctx,
 				Artifact{
 					Index: 0,
@@ -690,7 +671,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 				},
 				nil,
 			)
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
 			}, nil)
 		}()
@@ -789,16 +770,16 @@ func TestHandler_MultiTurnConversation(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
 		t.Log(buf.String())
 	}()
-	agent := AgentFunc(func(ctx context.Context, tr TaskResponder, task *Task) error {
-		if len(task.History) == 1 {
+	agent := AgentFunc(func(ctx context.Context, m TaskManager, r *AgentRequest) error {
+		if len(r.Task.History) == 1 {
 			// First turn: return InputRequired
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateInputRequired,
 				Message: &Message{
 					Role: MessageRoleAgent,
@@ -809,7 +790,7 @@ func TestHandler_MultiTurnConversation(t *testing.T) {
 			}, nil)
 		} else {
 			// Second turn: return Completed
-			tr.SetStatus(ctx, TaskStatus{
+			m.SetStatus(ctx, TaskStatus{
 				State: TaskStateCompleted,
 			}, nil)
 		}
