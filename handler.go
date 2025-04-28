@@ -667,10 +667,10 @@ func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *j
 }
 
 func (h *Handler) onSendTaskSubscribe(w http.ResponseWriter, httpReq *http.Request, rpcReq *jsonrpc.Request) {
-	h.logger().DebugContext(httpReq.Context(), "onSendTaskSubscribe called", "task_id", rpcReq.ID)
+	h.logger().DebugContext(httpReq.Context(), "onSendTaskSubscribe called", "json_rpc_id", rpcReq.ID)
 	params, err := h.parseTaskSendParams(rpcReq.Params)
 	if err != nil {
-		h.logger().WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "task_id", rpcReq.ID)
+		h.logger().WarnContext(httpReq.Context(), "Failed to parse task send params", "error", err, "json_rpc_id", rpcReq.ID)
 		jsonrpc.WriteError(w, rpcReq, err, http.StatusBadRequest)
 		return
 	}

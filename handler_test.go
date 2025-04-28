@@ -17,6 +17,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mutexWriter is a thread-safe wrapper for an io.Writer.
+type mutexWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (mw *mutexWriter) Write(p []byte) (n int, err error) {
+	mw.mu.Lock()
+	defer mw.mu.Unlock()
+	return mw.w.Write(p)
+}
+
 func TestHandler_TasksSendSync(t *testing.T) {
 	card := &AgentCard{
 		Name:               "Test Agent",
@@ -37,7 +49,7 @@ func TestHandler_TasksSendSync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -137,7 +149,7 @@ func TestHandler_TasksSendAsync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -255,7 +267,7 @@ func TestHandler_TasksCancel(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -373,7 +385,7 @@ func TestHandler_TasksSendSubscribeSync(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -482,7 +494,7 @@ func TestHandler_TasksResubscribe(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -631,7 +643,7 @@ func TestHandler_TasksPushNotification(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {
@@ -777,7 +789,7 @@ func TestHandler_MultiTurnConversation(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(&mutexWriter{w: &buf}, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 	defer func() {

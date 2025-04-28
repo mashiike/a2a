@@ -84,7 +84,11 @@ For more details, refer to the [godoc](https://pkg.go.dev/github.com/mashiike/a2
 
 #### Store Interface
 
-The `Store` interface manages tasks and their associated data. If the server operates asynchronously or across multiple server instances, it is recommended to replace the default `InMemoryStore` with a custom implementation.
+The `Store` interface manages tasks and their associated data. If the server operates asynchronously or across multiple server instances, it is recommended to replace the default `InMemoryStore` with a custom implementation. 
+
+The `store/s3` package provides a `Store` implementation that uses Amazon S3 for storage. This is useful for distributed systems or when persistent storage is required.
+
+The `Store` interface is defined in the `store` package, and you can implement your own `Store` interface to use a different storage backend.
 
 ```go
 type Store interface {
@@ -108,6 +112,8 @@ type PushNotificationStore interface {
 #### PubSub Interface
 
 The `PubSub` interface is required when setting `capabilities.streaming` to `true`.
+
+The default `ChannelPubSub` is a `PubSub` implementation that uses Go channels for communication. Additionally, the `pubsub/redis` package provides a `PubSub` implementation that uses Redis for communication, which is suitable for distributed systems.
 
 ```go
 type PubSub interface {
