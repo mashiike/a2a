@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.3.1](https://github.com/mashiike/a2a/compare/v0.3.0...v0.3.1) - 2025-04-30
+- SSE Response Close, if state is Final by @mashiike in https://github.com/mashiike/a2a/pull/18
+- Bump github.com/aws/aws-sdk-go-v2/service/s3 from 1.79.2 to 1.79.3 in the aws-sdk-go-v2 group by @dependabot in https://github.com/mashiike/a2a/pull/17
+
 ## [v0.3.0](https://github.com/mashiike/a2a/compare/v0.2.1...v0.3.0) - 2025-04-28
 - update store interface, history is not session scope by @mashiike in https://github.com/mashiike/a2a/pull/9
 - handler refactor: has options in handler by @mashiike in https://github.com/mashiike/a2a/pull/11
