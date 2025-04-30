@@ -711,7 +711,7 @@ func (h *Handler) writeSSE(ctx context.Context, w http.ResponseWriter, rpcReq *j
 		if fetchErr != nil {
 			return
 		}
-		if event.StatusUpdated != nil && event.StatusUpdated.Status.State.Final() {
+		if event.StatusUpdated != nil && event.StatusUpdated.Status != nil && event.StatusUpdated.Status.State.Final() {
 			h.logger().DebugContext(ctx, "Final state reached", "task_id", event.StatusUpdated.ID)
 			return
 		}
